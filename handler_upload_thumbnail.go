@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -28,10 +35,45 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	const maxMemory = 10 << 20
+	r.ParseMultipartForm(maxMemory)
 
-	respondWithJSON(w, http.StatusOK, struct{}{})
+	file, header, err := r.FormFile("thumbnail")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		return
+	}
+	imageType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if imageType != "image/png" && imageType != "image/jpeg" {
+		respondWithError(w, http.StatusBadRequest, "bad file type", err)
+		return
+
+	}
+	imageFileExtension := strings.Split(imageType, "/")[1]
+	defer file.Close()
+	video, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to get video", err)
+		return
+	}
+	var randBytes []byte
+	rand.Read(randBytes)
+	name := base64.RawURLEncoding.Strict().EncodeToString(randBytes)
+	path := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%v.%v", name, imageFileExtension))
+	f, err := os.Create(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to create thumbnail file", err)
+		return
+	}
+	defer f.Close()
+	io.Copy(f, file)
+
+	newURL := fmt.Sprintf("http://localhost:%v/assets/%v.%v", 8091, name, imageFileExtension)
+	video.ThumbnailURL = &newURL
+
+	cfg.db.UpdateVideo(video)
+
+	respondWithJSON(w, http.StatusOK, video)
 }
